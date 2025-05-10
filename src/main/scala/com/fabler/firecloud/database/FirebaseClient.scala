@@ -7,13 +7,13 @@ import com.google.cloud.firestore.{DocumentReference, DocumentSnapshot, Firestor
 import com.google.firebase.{FirebaseApp, FirebaseOptions}
 import com.google.firebase.cloud.FirestoreClient
 import io.circe.{Decoder, Encoder}
-import io.circe.parser._
+import io.circe.parser.decode
 import io.circe.syntax._
 import org.typelevel.log4cats.Logger
-import cats.implicits._
+import cats.implicits.*
 
 import scala.concurrent.ExecutionContext
-import scala.jdk.CollectionConverters._
+import scala.jdk.CollectionConverters.*
 import java.io.FileInputStream
 
 trait FirebaseClient {
@@ -55,8 +55,16 @@ class FirebaseClientImpl(
     for {
       _ <- logger.debug(s"Creating document in $collection with ID: $id")
       jsonData = data.asJson.noSpaces
-      dataMap = decode[Map[String, Any]](jsonData).getOrElse((Map.empty).asJava
-      _ <- IO(firestore.collection(collection).document(id).set(dataMap))
+      dataMap = decode[Map[String, Any]](jsonData).getOrElse(Map.empty)
+      javaDataMap = dataMap.map {
+        case (k, v) =>
+          val convertedValue = v match {
+            case m: Map[String, Any] @unchecked => m.asJava
+            case other => other.asInstanceOf[AnyRef]
+          }
+          k -> convertedValue
+      }.asJava
+      _ <- IO(firestore.collection(collection).document(id).set(javaDataMap))
     } yield data
   }
 
@@ -73,8 +81,16 @@ class FirebaseClientImpl(
     for {
       _ <- logger.debug(s"Updating document in $collection with ID: $id")
       jsonData = data.asJson.noSpaces
-      dataMap = decode[Map[String, Any]](jsonData).getOrElse(Map.empty).asJava
-      _ <- IO(firestore.collection(collection).document(id).set(dataMap))
+      dataMap = decode[Map[String, Any]](jsonData).getOrElse(Map.empty)
+      javaDataMap = dataMap.map {
+        case (k, v) =>
+          val convertedValue = v match {
+            case m: Map[String, Any] @unchecked => m.asJava
+            case other => other.asInstanceOf[AnyRef]
+          }
+          k -> convertedValue
+      }.asJava
+      _ <- IO(firestore.collection(collection).document(id).set(javaDataMap))
     } yield data
   }
 

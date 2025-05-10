@@ -2,55 +2,78 @@ package com.fabler.firecloud.middleware
 
 import cats.data.{Kleisli, OptionT}
 import cats.effect.IO
-import org.http4s.{Request, Response, Status}
-import org.http4s.dsl.io._
-import org.http4s.server.middleware.{Logger => HttpLogger}
-import org.http4s.headers.Authorization
-import org.typelevel.log4cats.Logger
+import cats.Monad
+import cats.implicits._
 import com.fabler.firecloud.models.User
 import com.fabler.firecloud.services.AuthService
+import org.http4s.{AuthedRoutes, ContextRequest, Request, Response, Status}
+import org.http4s.server.AuthMiddleware
+import org.http4s.headers.Authorization
+import org.typelevel.log4cats.Logger
 
-case class Auth(authService: AuthService)(implicit logger: Logger[IO]) {
+object Auth {
+  def apply(authService: AuthService)(implicit logger: Logger[IO]): Auth = new Auth(authService)
+}
 
-  val authUser: Kleisli[OptionT[IO, *], Request[IO], User] = Kleisli { req =>
-    OptionT {
-      req.headers.get(Authorization.name) match {
-        case Some(header) =>
-          // Extract token from Authorization header (Bearer token)
-          val token = header.head.value.replaceAll("Bearer ", "")
-          authService.authenticateToken(token)
-        case None =>
-          logger.warn("No Authorization header found").as(None)
-      }
-    }
-  }
+class Auth(authService: AuthService)(implicit logger: Logger[IO]) {
 
-  val onFailure: AuthedRoutes[String, IO] = Kleisli { req =>
-    OptionT.pure[IO](Response[IO](Status.Unauthorized))
-  }
+  // Remove custom type aliases and case class
+  implicit val ioMonad: Monad[IO] = Monad[IO]
 
-  def middleware: AuthMiddleware[IO, User] = AuthMiddleware(authUser, onFailure("Unauthorized"))
-
-  def withUser[A](req: Request[IO])(f: User => IO[Response[IO]]): IO[Response[IO]] = {
-    req.headers.get(Authorization.name) match {
-      case Some(header) =>
-        val token = header.toString.replaceAll("Bearer ", "")
+  def withUser(req: Request[IO])(f: User => IO[Response[IO]]): IO[Response[IO]] = {
+    extractBearerToken(req).flatMap {
+      case Some(token) =>
         authService.authenticateToken(token).flatMap {
           case Some(user) => f(user)
-          case None => Unauthorized("Invalid authentication token")
+          case None =>
+            logger.warn(s"Authentication failed: Invalid token") *>
+              IO.pure(Response[IO](Status.Unauthorized))
         }
-      case None => Unauthorized("Authentication required")
+      case None =>
+        logger.warn("Authentication failed: No bearer token provided") *>
+          IO.pure(Response[IO](Status.Unauthorized))
     }
   }
-}
 
-// Define these types to make the Auth class compile
-type AuthedRoutes[Auth, F[_]] = Kleisli[F, AuthedRequest[F, Auth], Response[F]]
-case class AuthedRequest[F[_], T](context: T, req: Request[F])
-object AuthMiddleware {
-  def apply[F[_], Auth](
-                         authUser: Kleisli[F, Request[F], Auth],
-                         onFailure: AuthedRoutes[String, F]
-                       ): AuthMiddleware[F, Auth] = ???
+  private def extractBearerToken(req: Request[IO]): IO[Option[String]] = {
+    req.headers.get[Authorization] match {
+      case Some(authHeader) =>
+        for {
+          _ <- logger.debug("Processing authorization header")
+          token <- IO(authHeader.credentials.renderString match {
+            case s"Bearer $t" => Some(t)
+            case _ => None
+          })
+          _ <- logger.debug(s"Token extraction result: ${token.isDefined}")
+        } yield token
+
+      case None =>
+        logger.debug("No authorization header found") *> IO.pure(None)
+    }
+  }
+
+  private val authUser: Kleisli[IO, Request[IO], Either[String, User]] =
+    Kleisli { req =>
+      extractBearerToken(req).flatMap {
+        case Some(token) =>
+          authService.authenticateToken(token).map {
+            case Some(user) => Right(user)
+            case None => Left("Invalid authentication token")
+          }
+        case None =>
+          IO.pure(Left("Missing authentication token"))
+      }
+    }
+
+  private val onFailure: AuthedRoutes[String, IO] = Kleisli {
+    (req: ContextRequest[IO, String]) =>
+      OptionT.liftF[IO, Response[IO]] {
+        IO.pure(Response[IO](Status.Unauthorized).withEntity(req.context))
+      }
+  }
+
+  val middleware: AuthMiddleware[IO, User] = AuthMiddleware(
+    authUser,
+    onFailure
+  )
 }
-type AuthMiddleware[F[_], Auth] = Kleisli[F, Request[F], Response[F]] => Kleisli[F, Request[F], Response[F]]
