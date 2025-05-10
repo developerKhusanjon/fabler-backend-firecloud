@@ -1,11 +1,11 @@
 ThisBuild / version := "0.1.0-SNAPSHOT"
 ThisBuild / organization := "com.fabler"
 ThisBuild / organizationName := "Fabler"
-ThisBuild / scalaVersion := "2.13.10"
+ThisBuild / scalaVersion := "3.5.0"
 
 val Http4sVersion = "0.23.7"
-val CirceVersion = "0.14.1"
-val PureConfigVersion = "0.17.1"
+val CirceVersion = "0.14.13"
+val PureConfigVersion = "0.17.7"
 
 lazy val root = (project in file("."))
   .settings(
@@ -26,7 +26,7 @@ lazy val root = (project in file("."))
       "io.circe" %% "circe-parser" % CirceVersion,
 
       // PureConfig for configuration
-      "com.github.pureconfig" %% "pureconfig" % PureConfigVersion,
+      "com.github.pureconfig" %% "pureconfig-core" % PureConfigVersion,
       "com.github.pureconfig" %% "pureconfig-cats-effect" % PureConfigVersion,
 
       // Logging

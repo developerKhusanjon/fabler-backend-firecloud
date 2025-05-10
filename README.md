@@ -44,7 +44,7 @@ fabler-firecloud/
 
 ## Tech Stack
 
-- Scala 2.13
+- Scala 3.5
 - Cats Effect for functional programming
 - Http4s for HTTP server
 - Circe for JSON handling

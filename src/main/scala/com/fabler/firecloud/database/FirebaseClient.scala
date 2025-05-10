@@ -15,8 +15,6 @@ import cats.implicits._
 import scala.concurrent.ExecutionContext
 import scala.jdk.CollectionConverters._
 import java.io.FileInputStream
-import java.util.concurrent.{CompletableFuture => JFuture}
-import scala.jdk.FutureConverters.CompletionStageOps
 
 trait FirebaseClient {
   def create[T: Encoder](collection: String, id: String, data: T): IO[T]
@@ -31,10 +29,6 @@ class FirebaseClientImpl(
                           private val firestore: Firestore
                         )(implicit val ec: ExecutionContext, val logger: Logger[IO]) extends FirebaseClient {
 
-  private def futureToIO[T](future: => JFuture[T]): IO[T] = {
-    IO.fromFuture(IO(future.toCompletableFuture.asScala))
-  }
-
   private def documentToObject[T: Decoder](document: DocumentSnapshot): IO[Option[T]] = {
     if (!document.exists()) {
       IO.pure(None)
@@ -43,7 +37,7 @@ class FirebaseClientImpl(
         k -> (v match {
           case s: String => s""""$s""""
           case n: Number => n.toString
-          case b: Boolean => b.toString
+          case b: AnyRef => b.toString
           case null => "null"
           case _ => s""""${v.toString}""""
         })
@@ -61,7 +55,7 @@ class FirebaseClientImpl(
     for {
       _ <- logger.debug(s"Creating document in $collection with ID: $id")
       jsonData = data.asJson.noSpaces
-      dataMap = decode[Map[String, Any]](jsonData).getOrElse(Map.empty).asJava
+      dataMap = decode[Map[String, Any]](jsonData).getOrElse((Map.empty).asJava
       _ <- IO(firestore.collection(collection).document(id).set(dataMap))
     } yield data
   }
