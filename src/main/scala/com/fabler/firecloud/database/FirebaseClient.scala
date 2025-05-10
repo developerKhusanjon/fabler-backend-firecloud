@@ -6,12 +6,16 @@ import com.google.auth.oauth2.GoogleCredentials
 import com.google.cloud.firestore.{DocumentReference, DocumentSnapshot, Firestore, QuerySnapshot}
 import com.google.firebase.{FirebaseApp, FirebaseOptions}
 import com.google.firebase.cloud.FirestoreClient
-import io.circe.{Decoder, Encoder}
 import io.circe.parser.decode
+import io.circe.Json
 import io.circe.syntax._
 import org.typelevel.log4cats.Logger
 import cats.implicits.*
-
+import io.circe.{Json, Encoder, Decoder}
+import io.circe.parser.parse
+import io.circe.Json
+import java.{lang => jl, util => ju}
+import cats.effect.unsafe.IORuntime
 import scala.concurrent.ExecutionContext
 import scala.jdk.CollectionConverters.*
 import java.io.FileInputStream
@@ -54,17 +58,9 @@ class FirebaseClientImpl(
   override def create[T: Encoder](collection: String, id: String, data: T): IO[T] = {
     for {
       _ <- logger.debug(s"Creating document in $collection with ID: $id")
-      jsonData = data.asJson.noSpaces
-      dataMap = decode[Map[String, Any]](jsonData).getOrElse(Map.empty)
-      javaDataMap = dataMap.map {
-        case (k, v) =>
-          val convertedValue = v match {
-            case m: Map[String, Any] @unchecked => m.asJava
-            case other => other.asInstanceOf[AnyRef]
-          }
-          k -> convertedValue
-      }.asJava
-      _ <- IO(firestore.collection(collection).document(id).set(javaDataMap))
+      json = data.asJson
+      javaMap <- convertJsonToJavaMap(json)
+      _ <- IO(firestore.collection(collection).document(id).set(javaMap))
     } yield data
   }
 
@@ -80,19 +76,42 @@ class FirebaseClientImpl(
   override def update[T: Encoder](collection: String, id: String, data: T): IO[T] = {
     for {
       _ <- logger.debug(s"Updating document in $collection with ID: $id")
-      jsonData = data.asJson.noSpaces
-      dataMap = decode[Map[String, Any]](jsonData).getOrElse(Map.empty)
-      javaDataMap = dataMap.map {
-        case (k, v) =>
-          val convertedValue = v match {
-            case m: Map[String, Any] @unchecked => m.asJava
-            case other => other.asInstanceOf[AnyRef]
-          }
-          k -> convertedValue
-      }.asJava
-      _ <- IO(firestore.collection(collection).document(id).set(javaDataMap))
+      json = data.asJson
+      javaMap <- convertJsonToJavaMap(json)
+      _ <- IO(firestore.collection(collection).document(id).set(javaMap))
     } yield data
   }
+
+  private def convertJsonValue(json: Json): IO[AnyRef] = IO {
+    json.fold[AnyRef](
+      jsonNull = null,
+      jsonBoolean = b => jl.Boolean.valueOf(b),
+      jsonNumber = n => n.toBigDecimal match {
+        case Some(bd) => bd.bigDecimal
+        case None => jl.Double.valueOf(n.toDouble)
+      },
+      jsonString = s => s,
+      jsonArray = arr => arr.map(convertJsonValueAndRun).asJava,
+      jsonObject = obj => convertJsonToJavaMap(Json.fromJsonObject(obj)).unsafeRunSync()
+    )
+  }
+
+  // New helper method to execute IO conversion
+  private def convertJsonValueAndRun(json: Json): AnyRef =
+    convertJsonValue(json).unsafeRunSync()
+  
+  private def convertJsonToJavaMap(json: Json): IO[ju.Map[String, AnyRef]] =
+    json.asObject match {
+      case Some(obj) =>
+        obj.toMap.toList
+          .traverse { case (k, v) =>
+            convertJsonValue(v).map(k -> _)
+          }
+          .map(_.toMap.asJava)
+
+      case None =>
+        IO.raiseError(new IllegalArgumentException("JSON value must be an object"))
+    }
 
   override def delete(collection: String, id: String): IO[Boolean] = {
     for {
